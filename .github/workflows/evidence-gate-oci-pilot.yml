@@ -59,11 +59,8 @@ jobs:
           set -e
           if [ "$producer" -ne 0 ]; then
             cat "$RUNNER_TEMP/out/oci-error.json" || true
-            python - "$RUNNER_TEMP/out/oci-error.json" "$RUNNER_TEMP/result.json" "$producer" <<'PY'
-            import json, pathlib, sys
-            p=pathlib.Path(sys.argv[1]); detail=json.loads(p.read_text()) if p.exists() else {'error':'missing_oci_error'}
-            json.dump({'artifact':__import__('os').environ['OCI_REF'],'classification':'HARNESS_FAILURE','producer_exit':int(sys.argv[3]),'oci_error':detail},open(sys.argv[2],'w'),indent=2)
-            PY
+            export PRODUCER_EXIT="$producer"
+            python -c "import json,os,pathlib; p=pathlib.Path(os.environ['RUNNER_TEMP'])/'out/oci-error.json'; d=json.loads(p.read_text()) if p.exists() else {'error':'missing_oci_error'}; json.dump({'artifact':os.environ['OCI_REF'],'classification':'HARNESS_FAILURE','producer_exit':int(os.environ.get('PRODUCER_EXIT','1')),'oci_error':d},open(pathlib.Path(os.environ['RUNNER_TEMP'])/'result.json','w'),indent=2)"
             exit 1
           fi
           set +e
