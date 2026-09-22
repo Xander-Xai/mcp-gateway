@@ -12,8 +12,8 @@ env:
   TRIVY_VERSION: 0.74.0
   TRIVY_ARCHIVE_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
   TRIVY_EXECUTABLE_SHA256: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
-  OCI_REF: docker.io/docker/mcp-gateway@sha256:c9d229c4fd6a0ea3534804fb80f3b320e1cc7ffb7e3b28aece8ada07d8de158b
-  OCI_TAG: docker.io/docker/mcp-gateway:v0.43.3
+  OCI_REF: registry-1.docker.io/docker/mcp-gateway@sha256:c9d229c4fd6a0ea3534804fb80f3b320e1cc7ffb7e3b28aece8ada07d8de158b
+  OCI_TAG: registry-1.docker.io/docker/mcp-gateway:v0.43.3
   OCI_INDEX_DIGEST: sha256:e3ee13818cb067a506c5e9acdb2bb4fe0e601caef7d116fc329755782f1a3cfa
 
 jobs:
