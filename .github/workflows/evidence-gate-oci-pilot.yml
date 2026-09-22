@@ -57,6 +57,15 @@ jobs:
           (cd "$RUNNER_TEMP/producer" && python -m src.oci_producer --trivy "$RUNNER_TEMP/trivy" --image "$OCI_REF" --platform-os linux --platform-arch amd64 --out "$RUNNER_TEMP/out")
           producer=$?
           set -e
+          if [ "$producer" -ne 0 ]; then
+            cat "$RUNNER_TEMP/out/oci-error.json" || true
+            python - "$RUNNER_TEMP/out/oci-error.json" "$RUNNER_TEMP/result.json" "$producer" <<'PY'
+            import json, pathlib, sys
+            p=pathlib.Path(sys.argv[1]); detail=json.loads(p.read_text()) if p.exists() else {'error':'missing_oci_error'}
+            json.dump({'artifact':__import__('os').environ['OCI_REF'],'classification':'HARNESS_FAILURE','producer_exit':int(sys.argv[3]),'oci_error':detail},open(sys.argv[2],'w'),indent=2)
+            PY
+            exit 1
+          fi
           set +e
           node "$RUNNER_TEMP/core/dist/cli.js" verify --receipt "$RUNNER_TEMP/out/receipt.json" --artifact "$RUNNER_TEMP/out/oci.manifest.json" --evidence "$RUNNER_TEMP/out/evidence.json" --policy strict-scanner-completeness --format json --now 2026-09-23T00:00:00Z > "$RUNNER_TEMP/core.json"; exact=$?
           cp "$RUNNER_TEMP/out/oci.manifest.json" "$RUNNER_TEMP/tampered.json"; printf '\n' >> "$RUNNER_TEMP/tampered.json"
@@ -89,3 +98,4 @@ jobs:
             ${{ runner.temp }}/out/receipt.json
             ${{ runner.temp }}/out/evidence.json
             ${{ runner.temp }}/out/trivy.raw.json
+            ${{ runner.temp }}/out/oci-error.json
