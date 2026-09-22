@@ -1,0 +1,87 @@
+name: Evidence Gate OCI pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCER_SHA: 6d533cd9a6a25a4b1cb06eefceff376551686a4b
+  CORE_SHA: da0b697da6b55d14db13fafec7538c83a314b035
+  TRIVY_VERSION: 0.74.0
+  TRIVY_ARCHIVE_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+  TRIVY_EXECUTABLE_SHA256: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
+  OCI_REF: docker.io/docker/mcp-gateway@sha256:c9d229c4fd6a0ea3534804fb80f3b320e1cc7ffb7e3b28aece8ada07d8de158b
+  OCI_TAG: docker.io/docker/mcp-gateway:v0.43.3
+  OCI_INDEX_DIGEST: sha256:e3ee13818cb067a506c5e9acdb2bb4fe0e601caef7d116fc329755782f1a3cfa
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.11'}
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with: {version: 10.33.4}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: 24}
+      - name: Fetch pinned Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_ARCHIVE_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP"
+          echo "${TRIVY_EXECUTABLE_SHA256}  $RUNNER_TEMP/trivy" | sha256sum --check --strict
+      - name: Fetch pinned Producer and Core
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Xander-Xai/mcp-evidence-producer-trivy.git "$RUNNER_TEMP/producer"; git -C "$RUNNER_TEMP/producer" checkout --detach "$PRODUCER_SHA"
+          git clone https://github.com/Xander-Xai/mcp-evidence-gate.git "$RUNNER_TEMP/core"; git -C "$RUNNER_TEMP/core" checkout --detach "$CORE_SHA"
+          pnpm --dir "$RUNNER_TEMP/core" install --frozen-lockfile; pnpm --dir "$RUNNER_TEMP/core" build
+      - name: Run exact OCI and tamper cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "$OCI_TAG" > "$RUNNER_TEMP/index.json"
+          python - <<'PY'
+          import json, os
+          idx=json.load(open(os.environ['RUNNER_TEMP']+'/index.json'))
+          assert any(d.get('digest')==os.environ['OCI_REF'].split('@',1)[1] and d.get('platform',{}).get('os')=='linux' and d.get('platform',{}).get('architecture')=='amd64' for d in idx['manifests'])
+          PY
+          mkdir -p "$RUNNER_TEMP/out"
+          (cd "$RUNNER_TEMP/producer" && python -m src.oci_producer --trivy "$RUNNER_TEMP/trivy" --image "$OCI_REF" --platform-os linux --platform-arch amd64 --out "$RUNNER_TEMP/out")
+          set +e
+          node "$RUNNER_TEMP/core/dist/cli.js" verify --receipt "$RUNNER_TEMP/out/receipt.json" --artifact "$RUNNER_TEMP/out/oci.manifest.json" --evidence "$RUNNER_TEMP/out/evidence.json" --policy strict-scanner-completeness --format json --now 2026-09-23T00:00:00Z > "$RUNNER_TEMP/core.json"; exact=$?
+          cp "$RUNNER_TEMP/out/oci.manifest.json" "$RUNNER_TEMP/tampered.json"; printf '\n' >> "$RUNNER_TEMP/tampered.json"
+          node "$RUNNER_TEMP/core/dist/cli.js" verify --receipt "$RUNNER_TEMP/out/receipt.json" --artifact "$RUNNER_TEMP/tampered.json" --evidence "$RUNNER_TEMP/out/evidence.json" --policy strict-scanner-completeness --format json --now 2026-09-23T00:00:00Z > "$RUNNER_TEMP/core-tampered.json"; tampered=$?
+          set -e
+          python - "$RUNNER_TEMP/out" "$RUNNER_TEMP/core.json" "$RUNNER_TEMP/core-tampered.json" "$exact" "$tampered" <<'PY'
+          import json, pathlib, sys, os
+          out=pathlib.Path(sys.argv[1]); ev=json.load(open(out/'evidence.json')); rec=json.load(open(out/'receipt.json')); core=json.load(open(sys.argv[2])); tam=json.load(open(sys.argv[3]))
+          assert int(sys.argv[4]) in (0,1) and int(sys.argv[5]) != 0
+          assert ev['scanner_execution']['completeness_status']=='complete' and ev['artifact']['root_digest']==rec['scanned_artifact_digest']
+          assert core['integrity_status']=='pass' and rec['verdict'] in ('clean','findings')
+          assert 'artifact_digest_mismatch' in tam.get('reason_codes',[])
+          json.dump({'artifact':rec['scanned_artifact_ref'],'digest':rec['scanned_artifact_digest'],'platform':ev['artifact']['platform'],'coverage':'TARGETS_PRESENT','execution':'COMPLETE','results':rec['verdict'],'tamper':'artifact_digest_mismatch','classification':'COMPATIBLE_FINDINGS' if rec['verdict']=='findings' else 'COMPATIBLE_CLEAN'},open(pathlib.Path(os.environ['RUNNER_TEMP'])/'result.json','w'),indent=2)
+          PY
+      - name: Upload OCI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wave3-2-oci-mcp-gateway-${{ github.sha }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/result.json
+            ${{ runner.temp }}/core.json
+            ${{ runner.temp }}/core-tampered.json
+            ${{ runner.temp }}/out/oci-identity.json
+            ${{ runner.temp }}/out/oci.index.json
+            ${{ runner.temp }}/out/oci.manifest.json
+            ${{ runner.temp }}/out/receipt.json
+            ${{ runner.temp }}/out/evidence.json
+            ${{ runner.temp }}/out/trivy.raw.json
