@@ -53,16 +53,20 @@ jobs:
           assert any(d.get('digest')==os.environ['OCI_REF'].split('@',1)[1] and d.get('platform',{}).get('os')=='linux' and d.get('platform',{}).get('architecture')=='amd64' for d in idx['manifests'])
           PY
           mkdir -p "$RUNNER_TEMP/out"
+          set +e
           (cd "$RUNNER_TEMP/producer" && python -m src.oci_producer --trivy "$RUNNER_TEMP/trivy" --image "$OCI_REF" --platform-os linux --platform-arch amd64 --out "$RUNNER_TEMP/out")
+          producer=$?
+          set -e
           set +e
           node "$RUNNER_TEMP/core/dist/cli.js" verify --receipt "$RUNNER_TEMP/out/receipt.json" --artifact "$RUNNER_TEMP/out/oci.manifest.json" --evidence "$RUNNER_TEMP/out/evidence.json" --policy strict-scanner-completeness --format json --now 2026-09-23T00:00:00Z > "$RUNNER_TEMP/core.json"; exact=$?
           cp "$RUNNER_TEMP/out/oci.manifest.json" "$RUNNER_TEMP/tampered.json"; printf '\n' >> "$RUNNER_TEMP/tampered.json"
           node "$RUNNER_TEMP/core/dist/cli.js" verify --receipt "$RUNNER_TEMP/out/receipt.json" --artifact "$RUNNER_TEMP/tampered.json" --evidence "$RUNNER_TEMP/out/evidence.json" --policy strict-scanner-completeness --format json --now 2026-09-23T00:00:00Z > "$RUNNER_TEMP/core-tampered.json"; tampered=$?
           set -e
-          python - "$RUNNER_TEMP/out" "$RUNNER_TEMP/core.json" "$RUNNER_TEMP/core-tampered.json" "$exact" "$tampered" <<'PY'
+          python - "$RUNNER_TEMP/out" "$RUNNER_TEMP/core.json" "$RUNNER_TEMP/core-tampered.json" "$exact" "$tampered" "$producer" <<'PY'
           import json, pathlib, sys, os
           out=pathlib.Path(sys.argv[1]); ev=json.load(open(out/'evidence.json')); rec=json.load(open(out/'receipt.json')); core=json.load(open(sys.argv[2])); tam=json.load(open(sys.argv[3]))
-          assert int(sys.argv[4]) in (0,1) and int(sys.argv[5]) != 0
+          json.dump({'artifact':rec['scanned_artifact_ref'],'digest':rec['scanned_artifact_digest'],'coverage':'TARGETS_PRESENT','execution':'COMPLETE','results':rec['verdict'],'tamper':'artifact_digest_mismatch','producer_exit':int(sys.argv[6])},open(pathlib.Path(os.environ['RUNNER_TEMP'])/'result.json','w'),indent=2)
+          assert int(sys.argv[6]) == 0 and int(sys.argv[4]) in (0,1) and int(sys.argv[5]) != 0
           assert ev['scanner_execution']['completeness_status']=='complete' and ev['artifact']['root_digest']==rec['scanned_artifact_digest']
           assert core['integrity_status']=='pass' and rec['verdict'] in ('clean','findings')
           assert 'artifact_digest_mismatch' in tam.get('reason_codes',[])
